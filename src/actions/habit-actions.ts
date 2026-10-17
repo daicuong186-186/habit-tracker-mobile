@@ -131,6 +131,41 @@ function validateHabitInput(input: unknown): { ok: true; data: HabitData } | { o
   };
 }
 
+/** Làm mới mọi trang dưới "/" (Dashboard, Thống kê, Lưu trữ) vì đều dùng chung dữ liệu thói quen. */
+function revalidateAll() {
+  revalidatePath("/", "layout");
+}
+
+type HabitWithLogs = Awaited<ReturnType<typeof findHabits>>[number];
+
+function findHabits(archived: boolean) {
+  return prisma.habit.findMany({
+    where: { archived },
+    orderBy: { createdAt: "asc" },
+    include: { logs: { orderBy: { date: "asc" } } },
+  });
+}
+
+function toDashboardHabit(habit: HabitWithLogs, now: Date): DashboardHabit {
+  const frequencyType: FrequencyType = habit.frequencyType === "SPECIFIC_DAYS" ? "SPECIFIC_DAYS" : "DAILY";
+  const logs: DashboardLog[] = habit.logs
+    .filter((log) => log.status === "COMPLETED" || log.status === "SKIPPED")
+    .map((log) => ({ date: log.date, status: log.status as LogStatus, note: log.note }));
+
+  return {
+    id: habit.id,
+    title: habit.title,
+    description: habit.description,
+    icon: habit.icon,
+    color: habit.color,
+    frequencyType,
+    targetDays: frequencyType === "DAILY" ? ALL_DAYS : parseTargetDays(habit.targetDays),
+    createdDate: toDateKey(habit.createdAt),
+    logs,
+    stats: calculateHabitStats({ frequencyType, targetDays: habit.targetDays, createdAt: habit.createdAt }, logs, now),
+  };
+}
+
 /**
  * Lấy dữ liệu Dashboard: các thói quen chưa lưu trữ, kèm toàn bộ log và thống kê
  * (streak/completion rate được tính theo ngày hôm nay, không phụ thuộc ngày đang chọn).
@@ -142,39 +177,16 @@ export async function getDashboardData(dateStr: string): Promise<DashboardData> 
   const today = toDateKey(now);
   const date = isDateKey(dateStr) && dateStr <= today ? dateStr : today;
 
-  const habits = await prisma.habit.findMany({
-    where: { archived: false },
-    orderBy: { createdAt: "asc" },
-    include: { logs: { orderBy: { date: "asc" } } },
-  });
+  const habits = await findHabits(false);
+  return { date, today, habits: habits.map((habit) => toDashboardHabit(habit, now)) };
+}
 
-  return {
-    date,
-    today,
-    habits: habits.map((habit) => {
-      const frequencyType: FrequencyType = habit.frequencyType === "SPECIFIC_DAYS" ? "SPECIFIC_DAYS" : "DAILY";
-      const logs: DashboardLog[] = habit.logs
-        .filter((log) => log.status === "COMPLETED" || log.status === "SKIPPED")
-        .map((log) => ({ date: log.date, status: log.status as LogStatus, note: log.note }));
-
-      return {
-        id: habit.id,
-        title: habit.title,
-        description: habit.description,
-        icon: habit.icon,
-        color: habit.color,
-        frequencyType,
-        targetDays: frequencyType === "DAILY" ? ALL_DAYS : parseTargetDays(habit.targetDays),
-        createdDate: toDateKey(habit.createdAt),
-        logs,
-        stats: calculateHabitStats(
-          { frequencyType, targetDays: habit.targetDays, createdAt: habit.createdAt },
-          logs,
-          now,
-        ),
-      };
-    }),
-  };
+/** Danh sách thói quen đã lưu trữ (kèm lịch sử để hiển thị tổng kết). */
+export async function getArchivedHabits(): Promise<DashboardHabit[]> {
+  await connection();
+  const now = new Date();
+  const habits = await findHabits(true);
+  return habits.map((habit) => toDashboardHabit(habit, now));
 }
 
 export async function createHabit(input: HabitInput): Promise<ActionResult<{ id: string }>> {
@@ -183,7 +195,7 @@ export async function createHabit(input: HabitInput): Promise<ActionResult<{ id:
 
   try {
     const habit = await prisma.habit.create({ data: parsed.data, select: { id: true } });
-    revalidatePath("/");
+    revalidateAll();
     return { ok: true, data: habit };
   } catch (error) {
     return { ok: false, error: errorMessage(error, "Không thể tạo thói quen. Vui lòng thử lại.") };
@@ -198,7 +210,7 @@ export async function updateHabit(id: string, input: HabitInput): Promise<Action
   try {
     const { count } = await prisma.habit.updateMany({ where: { id }, data: parsed.data });
     if (count === 0) return { ok: false, error: "Không tìm thấy thói quen." };
-    revalidatePath("/");
+    revalidateAll();
     return { ok: true, data: undefined };
   } catch (error) {
     return { ok: false, error: errorMessage(error, "Không thể cập nhật thói quen. Vui lòng thử lại.") };
@@ -212,7 +224,7 @@ export async function deleteHabit(id: string): Promise<ActionResult> {
     // HabitLog bị xóa theo nhờ onDelete: Cascade
     const { count } = await prisma.habit.deleteMany({ where: { id } });
     if (count === 0) return { ok: false, error: "Không tìm thấy thói quen." };
-    revalidatePath("/");
+    revalidateAll();
     return { ok: true, data: undefined };
   } catch (error) {
     return { ok: false, error: errorMessage(error, "Không thể xóa thói quen. Vui lòng thử lại.") };
@@ -226,7 +238,7 @@ export async function archiveHabit(id: string, archived: boolean = true): Promis
   try {
     const { count } = await prisma.habit.updateMany({ where: { id }, data: { archived } });
     if (count === 0) return { ok: false, error: "Không tìm thấy thói quen." };
-    revalidatePath("/");
+    revalidateAll();
     return { ok: true, data: undefined };
   } catch (error) {
     return { ok: false, error: errorMessage(error, "Không thể lưu trữ thói quen. Vui lòng thử lại.") };
@@ -272,7 +284,7 @@ export async function toggleHabitStatus(
       });
     }
 
-    revalidatePath("/");
+    revalidateAll();
     return { ok: true, data: undefined };
   } catch (error) {
     return { ok: false, error: errorMessage(error, "Không thể cập nhật trạng thái. Vui lòng thử lại.") };

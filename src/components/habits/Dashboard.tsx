@@ -1,9 +1,10 @@
 "use client";
 
-import { useOptimistic, useState, useTransition } from "react";
+import { useEffect, useOptimistic, useState, useTransition } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { getDay } from "date-fns";
-import { ChevronDown, ListChecks, Plus, Sparkles, X } from "lucide-react";
+import { Archive, ChevronDown, ListChecks, Plus, Sparkles, X } from "lucide-react";
 import {
   archiveHabit,
   deleteHabit,
@@ -16,25 +17,24 @@ import { calculateHabitStats, parseDateKey, type LogStatus } from "@/lib/streak"
 import { getDayProgress, isDueOn } from "@/lib/analytics";
 import { WEEKDAY_LONG } from "@/lib/habit-options";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { DailyProgress } from "./DailyProgress";
 import { DateStrip } from "./DateStrip";
+import { DeleteHabitDialog } from "./DeleteHabitDialog";
 import { HabitCard } from "./HabitCard";
 import { HabitFormDialog } from "./HabitFormDialog";
 
 type OptimisticAction =
   | { type: "status"; habitId: string; date: string; status: LogStatus | null; note?: string }
-  | { type: "remove"; habitId: string };
+  | { type: "remove"; habitId: string }
+  | { type: "add"; habit: DashboardHabit };
+
+const NOTICE_TIMEOUT_MS = 6000;
 
 function applyAction(habits: DashboardHabit[], action: OptimisticAction): DashboardHabit[] {
   if (action.type === "remove") return habits.filter((h) => h.id !== action.habitId);
+  if (action.type === "add") {
+    return [...habits, action.habit].sort((a, b) => a.createdDate.localeCompare(b.createdDate));
+  }
 
   return habits.map((habit) => {
     if (habit.id !== action.habitId) return habit;
@@ -77,20 +77,47 @@ export function Dashboard({ data }: { data: DashboardData }) {
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<DashboardHabit | null>(null);
   const [deleting, setDeleting] = useState<DashboardHabit | null>(null);
+  // Thông báo sau khi lưu trữ, kèm nút hoàn tác
+  const [archived, setArchived] = useState<DashboardHabit | null>(null);
+
+  useEffect(() => {
+    if (!archived) return;
+    const timer = setTimeout(() => setArchived(null), NOTICE_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [archived]);
 
   const isToday = date === today;
   const dueHabits = habits.filter((h) => isDueOn(h, date));
   const otherHabits = habits.filter((h) => !isDueOn(h, date));
   const progress = getDayProgress(habits, date);
 
-  function runAction(optimistic: OptimisticAction, action: () => Promise<ActionResult<unknown>>) {
+  function runAction(
+    optimistic: OptimisticAction,
+    action: () => Promise<ActionResult<unknown>>,
+    onSuccess?: () => void,
+  ) {
     setError(null);
     startTransition(async () => {
       applyOptimistic(optimistic);
       const result = await action();
       // Khi thất bại, useOptimistic tự hoàn tác về dữ liệu server sau khi transition kết thúc
       if (!result.ok) setError(result.error);
+      else onSuccess?.();
     });
+  }
+
+  function archive(habit: DashboardHabit) {
+    setArchived(null);
+    runAction(
+      { type: "remove", habitId: habit.id },
+      () => archiveHabit(habit.id, true),
+      () => setArchived(habit),
+    );
+  }
+
+  function undoArchive(habit: DashboardHabit) {
+    setArchived(null);
+    runAction({ type: "add", habit }, () => archiveHabit(habit.id, false));
   }
 
   function selectDate(next: string) {
@@ -121,9 +148,7 @@ export function Dashboard({ data }: { data: DashboardData }) {
             setEditing(habit);
             setFormOpen(true);
           }}
-          onArchive={() =>
-            runAction({ type: "remove", habitId: habit.id }, () => archiveHabit(habit.id, true))
-          }
+          onArchive={() => archive(habit)}
           onDelete={() => setDeleting(habit)}
         />
       </li>
@@ -205,33 +230,36 @@ export function Dashboard({ data }: { data: DashboardData }) {
 
       <HabitFormDialog open={formOpen} onOpenChange={setFormOpen} habit={editing} />
 
-      <Dialog open={deleting !== null} onOpenChange={(open) => !open && setDeleting(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Xóa thói quen?</DialogTitle>
-            <DialogDescription>
-              Thói quen &ldquo;{deleting?.title}&rdquo; cùng toàn bộ lịch sử check-in sẽ bị xóa vĩnh viễn. Nếu chỉ
-              muốn tạm ẩn, hãy chọn &ldquo;Lưu trữ&rdquo;.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleting(null)}>
-              Hủy
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={() => {
-                if (!deleting) return;
-                const id = deleting.id;
-                setDeleting(null);
-                runAction({ type: "remove", habitId: id }, () => deleteHabit(id));
-              }}
-            >
-              Xóa vĩnh viễn
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <DeleteHabitDialog
+        habit={deleting}
+        onCancel={() => setDeleting(null)}
+        onConfirm={(id) => {
+          setDeleting(null);
+          runAction({ type: "remove", habitId: id }, () => deleteHabit(id));
+        }}
+      />
+
+      {archived && (
+        <div
+          role="status"
+          className="fixed inset-x-4 bottom-4 z-50 mx-auto flex max-w-md items-center gap-3 rounded-xl bg-foreground px-4 py-3 text-sm text-background shadow-lg animate-in fade-in-0 slide-in-from-bottom-4"
+        >
+          <Archive className="size-4 shrink-0 opacity-70" />
+          <span className="min-w-0 flex-1 truncate">
+            Đã lưu trữ &ldquo;{archived.title}&rdquo;
+          </span>
+          <button
+            type="button"
+            onClick={() => undoArchive(archived)}
+            className="shrink-0 rounded-md px-2 py-1 font-semibold underline-offset-4 hover:underline"
+          >
+            Hoàn tác
+          </button>
+          <Link href="/archived" className="hidden shrink-0 opacity-70 hover:opacity-100 sm:inline">
+            Xem
+          </Link>
+        </div>
+      )}
     </div>
   );
 }
