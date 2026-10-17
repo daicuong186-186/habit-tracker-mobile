@@ -1,12 +1,36 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
+// Prisma 6 + SQLite. DATABASE_URL được nạp từ .env qua prisma.config.ts.
 
 generator client {
-  provider = "prisma-client"
-  output   = "../src/generated/prisma"
+  provider = "prisma-client-js"
 }
 
 datasource db {
   provider = "sqlite"
   url      = env("DATABASE_URL")
+}
+
+model Habit {
+  id            String     @id @default(cuid())
+  title         String
+  description   String?
+  icon          String     @default("CheckCircle2")
+  color         String     @default("#10b981")
+  frequencyType String     @default("DAILY") // "DAILY" | "SPECIFIC_DAYS"
+  targetDays    String     @default("[0,1,2,3,4,5,6]") // JSON: 0=CN ... 6=T7
+  archived      Boolean    @default(false)
+  createdAt     DateTime   @default(now())
+  logs          HabitLog[]
+}
+
+model HabitLog {
+  id        String   @id @default(cuid())
+  habitId   String
+  habit     Habit    @relation(fields: [habitId], references: [id], onDelete: Cascade)
+  date      String // "YYYY-MM-DD" theo giờ local
+  status    String // "COMPLETED" | "SKIPPED"
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@unique([habitId, date])
+  @@index([date])
 }
