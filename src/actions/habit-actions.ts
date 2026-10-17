@@ -2,32 +2,28 @@
 
 import { revalidatePath } from "next/cache";
 import { connection } from "next/server";
-import { isValid } from "date-fns";
 import { prisma } from "@/lib/prisma";
-import { isHabitIconName } from "@/lib/habit-options";
 import {
   calculateHabitStats,
-  parseDateKey,
   parseTargetDays,
   toDateKey,
   type FrequencyType,
   type HabitStats,
   type LogStatus,
 } from "@/lib/streak";
+import {
+  isDateKey,
+  isNonEmptyId,
+  validateHabitInput,
+  validateStatusInput,
+  type HabitInput,
+} from "@/lib/habit-validation";
 
 // Các export kiểu (type) bị xóa khi biên dịch nên vẫn hợp lệ trong file "use server".
 
 export type ActionResult<T = undefined> = { ok: true; data: T } | { ok: false; error: string };
 
-export interface HabitInput {
-  title: string;
-  description?: string | null;
-  icon: string;
-  color: string;
-  frequencyType: FrequencyType;
-  /** 0 = CN ... 6 = T7 */
-  targetDays: number[];
-}
+export type { HabitInput };
 
 export interface DashboardLog {
   date: string;
@@ -55,80 +51,11 @@ export interface DashboardData {
   habits: DashboardHabit[];
 }
 
-const TITLE_MAX = 100;
-const DESCRIPTION_MAX = 500;
-const NOTE_MAX = 500;
-const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
-const DATE_KEY = /^\d{4}-\d{2}-\d{2}$/;
 const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6];
-
-function isDateKey(value: unknown): value is string {
-  if (typeof value !== "string" || !DATE_KEY.test(value)) return false;
-  const date = parseDateKey(value);
-  // Loại bỏ ngày không tồn tại như 2026-02-30 (parse sẽ không khớp lại chuỗi gốc)
-  return isValid(date) && toDateKey(date) === value;
-}
-
-function isNonEmptyId(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0 && value.length <= 64;
-}
 
 function errorMessage(error: unknown, fallback: string): string {
   console.error(error);
   return fallback;
-}
-
-type HabitData = {
-  title: string;
-  description: string | null;
-  icon: string;
-  color: string;
-  frequencyType: FrequencyType;
-  targetDays: string;
-};
-
-function validateHabitInput(input: unknown): { ok: true; data: HabitData } | { ok: false; error: string } {
-  if (typeof input !== "object" || input === null) return { ok: false, error: "Dữ liệu không hợp lệ." };
-  const raw = input as Record<string, unknown>;
-
-  const title = typeof raw.title === "string" ? raw.title.trim() : "";
-  if (!title) return { ok: false, error: "Tên thói quen không được để trống." };
-  if (title.length > TITLE_MAX) return { ok: false, error: `Tên thói quen tối đa ${TITLE_MAX} ký tự.` };
-
-  let description: string | null = null;
-  if (raw.description !== undefined && raw.description !== null) {
-    if (typeof raw.description !== "string") return { ok: false, error: "Mô tả không hợp lệ." };
-    description = raw.description.trim() || null;
-    if (description && description.length > DESCRIPTION_MAX) {
-      return { ok: false, error: `Mô tả tối đa ${DESCRIPTION_MAX} ký tự.` };
-    }
-  }
-
-  const icon = isHabitIconName(raw.icon) ? raw.icon : null;
-  if (!icon) return { ok: false, error: "Icon không hợp lệ." };
-
-  const color = typeof raw.color === "string" && HEX_COLOR.test(raw.color) ? raw.color.toLowerCase() : null;
-  if (!color) return { ok: false, error: "Màu sắc phải là mã Hex dạng #RRGGBB." };
-
-  const frequencyType = raw.frequencyType;
-  if (frequencyType !== "DAILY" && frequencyType !== "SPECIFIC_DAYS") {
-    return { ok: false, error: "Tần suất không hợp lệ." };
-  }
-
-  let days = ALL_DAYS;
-  if (frequencyType === "SPECIFIC_DAYS") {
-    if (!Array.isArray(raw.targetDays)) return { ok: false, error: "Danh sách thứ trong tuần không hợp lệ." };
-    if (raw.targetDays.some((d) => !Number.isInteger(d) || d < 0 || d > 6)) {
-      return { ok: false, error: "Thứ trong tuần phải nằm trong khoảng 0 (CN) đến 6 (T7)." };
-    }
-    days = parseTargetDays(raw.targetDays as number[]);
-    if (days.length === 0) return { ok: false, error: "Hãy chọn ít nhất một ngày trong tuần." };
-  }
-
-  return {
-    ok: true,
-    data: { title, description, icon, color, frequencyType, targetDays: JSON.stringify(days) },
-  };
 }
 
 /** Làm mới mọi trang dưới "/" (Dashboard, Thống kê, Lưu trữ) vì đều dùng chung dữ liệu thói quen. */
@@ -257,30 +184,22 @@ export async function toggleHabitStatus(
   note?: string,
 ): Promise<ActionResult> {
   if (!isNonEmptyId(habitId)) return { ok: false, error: "Mã thói quen không hợp lệ." };
-  if (!isDateKey(date)) return { ok: false, error: "Ngày phải có định dạng YYYY-MM-DD." };
-  if (date > toDateKey(new Date())) return { ok: false, error: "Không thể ghi nhận cho ngày trong tương lai." };
-  if (status !== null && status !== "COMPLETED" && status !== "SKIPPED") {
-    return { ok: false, error: "Trạng thái không hợp lệ." };
-  }
-  if (note !== undefined && typeof note !== "string") return { ok: false, error: "Ghi chú không hợp lệ." };
-  const trimmedNote = note?.trim();
-  if (trimmedNote && trimmedNote.length > NOTE_MAX) {
-    return { ok: false, error: `Ghi chú tối đa ${NOTE_MAX} ký tự.` };
-  }
+  const parsed = validateStatusInput(date, status, note, toDateKey(new Date()));
+  if (!parsed.ok) return parsed;
 
   try {
     const habit = await prisma.habit.findUnique({ where: { id: habitId }, select: { id: true } });
     if (!habit) return { ok: false, error: "Không tìm thấy thói quen." };
 
-    if (status === null) {
+    const { status: nextStatus, note: noteValue } = parsed.data;
+    if (nextStatus === null) {
       await prisma.habitLog.deleteMany({ where: { habitId, date } });
     } else {
-      // note === undefined: giữ nguyên ghi chú cũ; chuỗi rỗng: xóa ghi chú
-      const noteValue = note === undefined ? undefined : trimmedNote || null;
+      // noteValue === undefined: giữ nguyên ghi chú cũ; null: xóa ghi chú
       await prisma.habitLog.upsert({
         where: { habitId_date: { habitId, date } },
-        create: { habitId, date, status, note: noteValue ?? null },
-        update: { status, ...(noteValue !== undefined && { note: noteValue }) },
+        create: { habitId, date, status: nextStatus, note: noteValue ?? null },
+        update: { status: nextStatus, ...(noteValue !== undefined && { note: noteValue }) },
       });
     }
 
