@@ -7,13 +7,8 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { parseDateKey, toDateKey } from "@/lib/streak";
 import { WEEKDAY_SHORT } from "@/lib/habit-options";
+import type { DayProgress } from "@/lib/analytics";
 
-
-export interface DayProgress {
-  completed: number;
-  /** Số thói quen cần làm trong ngày (không tính SKIPPED) */
-  required: number;
-}
 
 interface DateStripProps {
   selectedDate: string;

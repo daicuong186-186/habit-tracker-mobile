@@ -12,7 +12,8 @@ import {
   type DashboardData,
   type DashboardHabit,
 } from "@/actions/habit-actions";
-import { calculateHabitStats, isTargetDay, parseDateKey, type LogStatus } from "@/lib/streak";
+import { calculateHabitStats, parseDateKey, type LogStatus } from "@/lib/streak";
+import { getDayProgress, isDueOn } from "@/lib/analytics";
 import { WEEKDAY_LONG } from "@/lib/habit-options";
 import { Button } from "@/components/ui/button";
 import {
@@ -24,7 +25,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { DailyProgress } from "./DailyProgress";
-import { DateStrip, type DayProgress } from "./DateStrip";
+import { DateStrip } from "./DateStrip";
 import { HabitCard } from "./HabitCard";
 import { HabitFormDialog } from "./HabitFormDialog";
 
@@ -59,28 +60,6 @@ function applyAction(habits: DashboardHabit[], action: OptimisticAction): Dashbo
   });
 }
 
-/** Thói quen có cần làm trong ngày `date` không (đã được tạo và đúng lịch) */
-function isDueOn(habit: DashboardHabit, date: string): boolean {
-  return habit.createdDate <= date && isTargetDay(habit, parseDateKey(date));
-}
-
-function computeDayProgress(habits: DashboardHabit[], date: string): DayProgress & { skipped: number } {
-  let completed = 0;
-  let required = 0;
-  let skipped = 0;
-  for (const habit of habits) {
-    if (!isDueOn(habit, date)) continue;
-    const status = habit.logs.find((l) => l.date === date)?.status;
-    if (status === "SKIPPED") {
-      skipped++;
-      continue;
-    }
-    required++;
-    if (status === "COMPLETED") completed++;
-  }
-  return { completed, required, skipped };
-}
-
 function formatLongDate(date: string): string {
   const d = parseDateKey(date);
   const [y, m, day] = date.split("-");
@@ -102,7 +81,7 @@ export function Dashboard({ data }: { data: DashboardData }) {
   const isToday = date === today;
   const dueHabits = habits.filter((h) => isDueOn(h, date));
   const otherHabits = habits.filter((h) => !isDueOn(h, date));
-  const progress = computeDayProgress(habits, date);
+  const progress = getDayProgress(habits, date);
 
   function runAction(optimistic: OptimisticAction, action: () => Promise<ActionResult<unknown>>) {
     setError(null);
@@ -186,7 +165,7 @@ export function Dashboard({ data }: { data: DashboardData }) {
           <DateStrip
             selectedDate={date}
             today={today}
-            getDayProgress={(d) => computeDayProgress(habits, d)}
+            getDayProgress={(d) => getDayProgress(habits, d)}
             onSelectDate={selectDate}
           />
 
