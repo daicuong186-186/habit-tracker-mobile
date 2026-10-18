@@ -23,9 +23,11 @@ jobs:
           eas-version: latest
           token: ${{ secrets.EXPO_TOKEN }}
 
-      - name: Install dependencies
+      - name: Remove yarnlock if exists
+        run: rm -f yarn.lock
+
+      - name: Install dependencies with npm
         run: npm install --legacy-peer-deps
 
       - name: Build on EAS
         run: eas build --platform ios --profile preview --non-interactive
-        
