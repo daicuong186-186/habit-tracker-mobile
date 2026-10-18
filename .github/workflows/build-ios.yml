@@ -1,9 +1,9 @@
-name: Build Unsigned iOS IPA
+﻿name: Build Unsigned iOS IPA
 
 on:
   push:
     branches: [ main ]
-  workflow_dispatch: # Cho phép bấm nút chạy lại trên web mà không cần sửa code
+  workflow_dispatch:
 
 jobs:
   build-ios:
@@ -17,22 +17,36 @@ jobs:
         with:
           node-version: 20
 
-      - name: 3. Install dependencies
-        run: npm install --legacy-peer-deps
-
-      - name: 4. Generate native iOS folder (Expo Prebuild)
-        run: npx expo prebuild --platform ios --no-install
-
-      - name: 5. Install CocoaPods
+      - name: 3. Locate Project, Install & Prebuild iOS
         run: |
-          cd ios
+          APP_JSON_PATH=$(find . -maxdepth 3 -name "app.json" -not -path "*/node_modules/*" | head -n 1)
+          if [ -z "$APP_JSON_PATH" ]; then
+            echo "Error: Khong tim thay file app.json tren GitHub!"
+            ls -la
+            exit 1
+          fi
+          APP_DIR=$(dirname "$APP_JSON_PATH")
+          echo "Found Expo project at: $APP_DIR"
+          cd "$APP_DIR"
+          
+          npm install --legacy-peer-deps
+          if [ ! -d "node_modules/expo" ]; then
+            npm install expo --legacy-peer-deps
+          fi
+          
+          CI=1 npx expo prebuild --platform ios --no-install
+
+      - name: 4. Install CocoaPods & Build Unsigned App
+        run: |
+          APP_JSON_PATH=$(find . -maxdepth 3 -name "app.json" -not -path "*/node_modules/*" | head -n 1)
+          APP_DIR=$(dirname "$APP_JSON_PATH")
+          cd "$APP_DIR/ios"
+          
           pod install
-
-      - name: 6. Build Unsigned App with Xcode
-        run: |
-          cd ios
+          
           WORKSPACE=$(ls -d *.xcworkspace | head -n 1)
           SCHEME=$(basename "$WORKSPACE" .xcworkspace)
+          
           xcodebuild -workspace "$WORKSPACE" \
             -scheme "$SCHEME" \
             -configuration Release \
@@ -40,16 +54,20 @@ jobs:
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY=""
+            CODE_SIGN_IDENTITY="" \
+            COMPILER_INDEX_STORE_ENABLE=NO
 
-      - name: 7. Package into .ipa file
+      - name: 5. Package into .ipa file
         run: |
+          APP_JSON_PATH=$(find . -maxdepth 3 -name "app.json" -not -path "*/node_modules/*" | head -n 1)
+          APP_DIR=$(dirname "$APP_JSON_PATH")
+          cd "$APP_DIR"
           mkdir -p Payload
           APP_PATH=$(find ios/build/Build/Products/Release-iphoneos -name "*.app" | head -n 1)
           cp -r "$APP_PATH" Payload/
-          zip -r HabitTracker.ipa Payload
+          zip -r "$GITHUB_WORKSPACE/HabitTracker.ipa" Payload
 
-      - name: 8. Upload .ipa to GitHub Artifacts
+      - name: 6. Upload .ipa to GitHub Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: HabitTracker-iOS-IPA
