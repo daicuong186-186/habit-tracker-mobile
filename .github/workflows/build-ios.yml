@@ -24,7 +24,7 @@ jobs:
           token: ${{ secrets.EXPO_TOKEN }}
 
       - name: Install dependencies
-        run: yarn install
+        run: npm install --legacy-peer-deps
 
       - name: Build on EAS
         run: eas build --platform ios --profile preview --non-interactive
