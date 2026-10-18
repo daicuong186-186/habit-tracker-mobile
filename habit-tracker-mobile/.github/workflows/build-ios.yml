@@ -1,31 +1,56 @@
-name: Build iOS App
+name: Build Unsigned iOS IPA
 
 on:
   push:
     branches: [ main ]
+  workflow_dispatch: # Cho phép bấm nút chạy lại trên web mà không cần sửa code
 
 jobs:
-  build:
+  build-ios:
     runs-on: macos-latest
     steps:
-      - name: Checkout repository
+      - name: 1. Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: 2. Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: 20
 
-      - name: Setup Expo
-        uses: expo/expo-github-action@v8
+      - name: 3. Install dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: 4. Generate native iOS folder (Expo Prebuild)
+        run: npx expo prebuild --platform ios --no-install
+
+      - name: 5. Install CocoaPods
+        run: |
+          cd ios
+          pod install
+
+      - name: 6. Build Unsigned App with Xcode
+        run: |
+          cd ios
+          WORKSPACE=$(ls -d *.xcworkspace | head -n 1)
+          SCHEME=$(basename "$WORKSPACE" .xcworkspace)
+          xcodebuild -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: 7. Package into .ipa file
+        run: |
+          mkdir -p Payload
+          APP_PATH=$(find ios/build/Build/Products/Release-iphoneos -name "*.app" | head -n 1)
+          cp -r "$APP_PATH" Payload/
+          zip -r HabitTracker.ipa Payload
+
+      - name: 8. Upload .ipa to GitHub Artifacts
+        uses: actions/upload-artifact@v4
         with:
-          expo-version: latest
-          eas-version: latest
-          token: ${{ secrets.EXPO_TOKEN }}
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Build on EAS
-        run: eas build --platform ios --profile preview --non-interactive
-        
+          name: HabitTracker-iOS-IPA
+          path: HabitTracker.ipa
